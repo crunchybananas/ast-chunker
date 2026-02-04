@@ -131,7 +131,48 @@ ASTChunker extracts rich metadata for improved search relevance:
 | TypeScript | Tree-sitter | ✅ Full support |
 | JavaScript | Tree-sitter | ✅ Full support |
 | Ruby | Parser gem | ✅ Full support |
-| Glimmer/gts/gjs | Custom | ✅ Template extraction |
+| Glimmer/gts/gjs | Tree-sitter | ✅ Template extraction |
+
+## Configuration
+
+### Glimmer/GTS Support
+
+Glimmer TypeScript (`.gts`/`.gjs`) parsing requires the tree-sitter CLI and a Glimmer grammar. Configure via environment variables or pass paths directly:
+
+```bash
+# Environment variables
+export AST_CHUNKER_TREE_SITTER_CLI="/opt/homebrew/bin/tree-sitter"
+export AST_CHUNKER_GLIMMER_LIB="/path/to/glimmer_typescript.dylib"
+```
+
+```swift
+// Or pass paths directly
+let chunker = GlimmerChunker(
+    treeSitterLibPath: "/path/to/glimmer_typescript.dylib",
+    treeSitterCLIPath: "/opt/homebrew/bin/tree-sitter"
+)
+```
+
+**Installing tree-sitter CLI:**
+```bash
+# macOS (Homebrew)
+brew install tree-sitter
+
+# Or build from source
+cargo install tree-sitter-cli
+```
+
+**Building Glimmer grammar:**
+```bash
+git clone https://github.com/ember-tooling/tree-sitter-glimmer-typescript
+cd tree-sitter-glimmer-typescript
+tree-sitter generate
+# The .dylib will be in the build directory
+```
+
+The tree-sitter CLI is auto-detected in common paths (`/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin`). The Glimmer library must be explicitly configured.
+
+If Glimmer tools aren't available, the chunker falls back to line-based chunking automatically.
 
 ## Requirements
 

@@ -21,14 +21,69 @@ public struct GlimmerChunker: LanguageChunker, Sendable {
   /// Whether the chunker is available (library and CLI exist)
   public let isAvailable: Bool
   
+  /// Environment variable for Glimmer TypeScript library path
+  public static let envLibPath = "AST_CHUNKER_GLIMMER_LIB"
+  
+  /// Environment variable for tree-sitter CLI path
+  public static let envCLIPath = "AST_CHUNKER_TREE_SITTER_CLI"
+  
+  /// Common search paths for tree-sitter CLI
+  private static let treeSitterCLISearchPaths = [
+    "/opt/homebrew/bin/tree-sitter",
+    "/usr/local/bin/tree-sitter",
+    "/usr/bin/tree-sitter",
+  ]
+  
   public init(
-    treeSitterLibPath: String = "~/code/tree-sitter-grammars/tree-sitter-glimmer-typescript/glimmer_typescript.dylib",
-    treeSitterCLIPath: String = "/opt/homebrew/bin/tree-sitter"
+    treeSitterLibPath: String? = nil,
+    treeSitterCLIPath: String? = nil
   ) {
-    self.treeSitterLibPath = (treeSitterLibPath as NSString).expandingTildeInPath
-    self.treeSitterCLIPath = treeSitterCLIPath
-    self.isAvailable = FileManager.default.fileExists(atPath: self.treeSitterLibPath) &&
-                       FileManager.default.fileExists(atPath: treeSitterCLIPath)
+    // Resolve library path: explicit > env var > nil (unavailable)
+    let resolvedLibPath = treeSitterLibPath
+      ?? ProcessInfo.processInfo.environment[Self.envLibPath]
+    
+    // Resolve CLI path: explicit > env var > search common paths
+    let resolvedCLIPath = treeSitterCLIPath
+      ?? ProcessInfo.processInfo.environment[Self.envCLIPath]
+      ?? Self.findTreeSitterCLI()
+    
+    self.treeSitterLibPath = resolvedLibPath.map { ($0 as NSString).expandingTildeInPath } ?? ""
+    self.treeSitterCLIPath = resolvedCLIPath ?? ""
+    
+    self.isAvailable = !self.treeSitterLibPath.isEmpty &&
+                       !self.treeSitterCLIPath.isEmpty &&
+                       FileManager.default.fileExists(atPath: self.treeSitterLibPath) &&
+                       FileManager.default.fileExists(atPath: self.treeSitterCLIPath)
+  }
+  
+  /// Search for tree-sitter CLI in common locations
+  private static func findTreeSitterCLI() -> String? {
+    for path in treeSitterCLISearchPaths {
+      if FileManager.default.fileExists(atPath: path) {
+        return path
+      }
+    }
+    // Try which command as fallback
+    let process = Process()
+    let pipe = Pipe()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/which")
+    process.arguments = ["tree-sitter"]
+    process.standardOutput = pipe
+    process.standardError = FileHandle.nullDevice
+    
+    do {
+      try process.run()
+      process.waitUntilExit()
+      if process.terminationStatus == 0 {
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        if let path = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !path.isEmpty {
+          return path
+        }
+      }
+    } catch {}
+    
+    return nil
   }
   
   public func chunk(source: String, maxChunkLines: Int = 200) -> [ASTChunk] {
