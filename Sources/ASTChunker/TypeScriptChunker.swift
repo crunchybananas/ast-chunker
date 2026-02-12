@@ -118,13 +118,15 @@ public struct TypeScriptChunker: LanguageChunker, Sendable {
     for construct in constructs {
       if construct.endLine - construct.startLine + 1 <= maxChunkLines {
         let text = extractLines(from: lines, start: construct.startLine, end: construct.endLine)
+        let typeRefs = extractTypeReferences(from: text)
         chunks.append(ASTChunk(
           constructType: construct.type,
           constructName: construct.name,
           startLine: construct.startLine + 1, // Convert to 1-indexed
           endLine: construct.endLine + 1,
           text: text,
-          language: "TypeScript"
+          language: "TypeScript",
+          metadata: ASTChunkMetadata(typeReferences: typeRefs)
         ))
       } else {
         // Split large construct into smaller chunks
@@ -463,7 +465,8 @@ public struct TypeScriptChunker: LanguageChunker, Sendable {
         startLine: currentStart + 1,  // Convert to 1-indexed
         endLine: currentEnd + 1,
         text: text,
-        language: "TypeScript"
+        language: "TypeScript",
+        metadata: ASTChunkMetadata(typeReferences: extractTypeReferences(from: text))
       ))
       
       currentStart = currentEnd + 1 - overlapLines
@@ -473,6 +476,82 @@ public struct TypeScriptChunker: LanguageChunker, Sendable {
     }
     
     return chunks
+  }
+  
+  // MARK: - Type Reference Extraction
+  
+  /// Extract type names referenced in TypeScript/JavaScript source text (for orphan detection).
+  /// Finds types used in:
+  /// - Type annotations: `x: SomeType`, `as SomeType`
+  /// - Generic type parameters: `Array<SomeType>`
+  /// - Class instantiation: `new SomeType()`
+  /// - Extends/implements: `extends Base`, `implements IFoo`
+  /// - Named imports: `import { SomeType } from '...'`
+  private func extractTypeReferences(from text: String) -> [String] {
+    var refs = Set<String>()
+    let nsText = text as NSString
+    let fullRange = NSRange(location: 0, length: nsText.length)
+    
+    // Skip built-in types
+    let builtins: Set<String> = [
+      "string", "number", "boolean", "void", "any", "unknown", "never", "null",
+      "undefined", "object", "symbol", "bigint",
+      "String", "Number", "Boolean", "Object", "Symbol", "BigInt",
+      "Array", "Map", "Set", "WeakMap", "WeakSet", "Promise", "Date",
+      "Error", "RegExp", "Function", "Record", "Partial", "Required",
+      "Readonly", "Pick", "Omit", "Exclude", "Extract", "NonNullable",
+      "ReturnType", "InstanceType", "Parameters", "ConstructorParameters",
+      "Awaited", "Uppercase", "Lowercase", "Capitalize", "Uncapitalize"
+    ]
+    
+    let patterns: [(String, Int)] = [
+      // Type annotations: `: SomeType` (after colon, not in ternary)
+      (#":\s+([A-Z]\w+)"#, 1),
+      // `as SomeType` type assertions
+      (#"\bas\s+([A-Z]\w+)"#, 1),
+      // `new SomeType(` constructor calls
+      (#"\bnew\s+([A-Z]\w+)"#, 1),
+      // `extends SomeType` / `implements SomeType`
+      (#"\b(?:extends|implements)\s+([A-Z]\w+)"#, 1),
+      // Generic parameters: `<SomeType>` or `<SomeType,`
+      (#"<([A-Z]\w+)[,>]"#, 1),
+      // Named imports: `import { Foo, Bar } from`
+      (#"import\s+\{([^}]+)\}\s+from"#, 1),
+      // `typeof SomeType`
+      (#"\btypeof\s+([A-Z]\w+)"#, 1),
+      // Static member access: `SomeType.method` (only UpperCamelCase)
+      (#"\b([A-Z]\w+)\.\w+"#, 1),
+    ]
+    
+    for (pattern, group) in patterns {
+      guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+      let matches = regex.matches(in: text, range: fullRange)
+      
+      for match in matches {
+        guard match.numberOfRanges > group else { continue }
+        let range = match.range(at: group)
+        guard range.location != NSNotFound else { continue }
+        let captured = nsText.substring(with: range)
+        
+        // Special handling for named imports: split comma-separated names
+        if pattern.contains("import") {
+          let names = captured.components(separatedBy: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .map { $0.components(separatedBy: " as ").first ?? $0 } // handle `Foo as Bar`
+            .filter { !$0.isEmpty && $0.first?.isUppercase == true }
+          for name in names {
+            let cleaned = name.trimmingCharacters(in: .whitespaces)
+            if !builtins.contains(cleaned) {
+              refs.insert(cleaned)
+            }
+          }
+        } else if !builtins.contains(captured) {
+          refs.insert(captured)
+        }
+      }
+    }
+    
+    return refs.sorted()
   }
   
   private func extractLines(from lines: [String], start: Int, end: Int) -> String {

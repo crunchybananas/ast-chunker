@@ -100,18 +100,34 @@ public final class JSCoreTypeScriptChunker: @unchecked Sendable {
       }
     }
     
-    // Development: check Tools directory
-    let devPaths = [
-      "~/code/KitchenSink/Tools/ast-chunker-js/dist/ast-chunker.bundle.js",
-    ]
-    
-    for path in devPaths {
-      let expanded = (path as NSString).expandingTildeInPath
-      if FileManager.default.fileExists(atPath: expanded) {
-        return URL(fileURLWithPath: expanded)
+    // Development: resolve relative to this source file's location
+    // #filePath gives the compile-time path of this .swift file,
+    // so we walk up to the repo root regardless of folder name.
+    let repoRoot = Self.findRepoRoot()
+    if let root = repoRoot {
+      let bundlePath = (root as NSString).appendingPathComponent("Tools/ast-chunker-js/dist/ast-chunker.bundle.js")
+      if FileManager.default.fileExists(atPath: bundlePath) {
+        return URL(fileURLWithPath: bundlePath)
       }
     }
     
+    return nil
+  }
+  
+  /// Find the repo root from #filePath (compile-time source location)
+  /// This file lives at: <repo>/Local Packages/ASTChunker/Sources/ASTChunker/JSCoreTypeScriptChunker.swift
+  /// So we walk up 5 directory levels to get the repo root.
+  private static func findRepoRoot() -> String? {
+    var url = URL(fileURLWithPath: #filePath)
+    // Walk up: ASTChunker/ -> Sources/ -> ASTChunker/ -> Local Packages/ -> <repo root>
+    for _ in 0..<5 {
+      url = url.deletingLastPathComponent()
+    }
+    let root = url.path
+    // Verify it looks like the repo root (has Tools/ directory)
+    if FileManager.default.fileExists(atPath: (root as NSString).appendingPathComponent("Tools")) {
+      return root
+    }
     return nil
   }
   
@@ -168,7 +184,7 @@ public final class JSCoreTypeScriptChunker: @unchecked Sendable {
       
       // Convert to ASTChunk with metadata
       return jsChunks.map { js in
-        let metadata = convertJSMetadata(js.metadata, language: language)
+        let metadata = convertJSMetadata(js.metadata, language: language, chunkText: js.text)
         return ASTChunk(
           constructType: mapConstructType(js.constructType),
           constructName: js.constructName,
@@ -249,9 +265,9 @@ public final class JSCoreTypeScriptChunker: @unchecked Sendable {
   }
   
   /// Convert JS metadata to ASTChunkMetadata
-  private func convertJSMetadata(_ jsMetadata: JSChunkMetadata?, language: String) -> ASTChunkMetadata {
+  private func convertJSMetadata(_ jsMetadata: JSChunkMetadata?, language: String, chunkText: String) -> ASTChunkMetadata {
     guard let js = jsMetadata else {
-      return ASTChunkMetadata()
+      return ASTChunkMetadata(typeReferences: extractTypeReferences(from: chunkText))
     }
     
     return ASTChunkMetadata(
@@ -262,8 +278,72 @@ public final class JSCoreTypeScriptChunker: @unchecked Sendable {
       usesEmberConcurrency: js.usesEmberConcurrency ?? false,
       hasTemplate: js.hasTemplate ?? false,
       tioUiImports: js.tioUiImports ?? [],
-      frameworks: js.frameworks ?? []
+      frameworks: js.frameworks ?? [],
+      typeReferences: extractTypeReferences(from: chunkText)
     )
+  }
+  
+  // MARK: - Type Reference Extraction
+  
+  /// Extract type names referenced in TypeScript/JavaScript source text (for orphan detection).
+  /// Uses regex patterns to find type annotations, instantiations, extends/implements, and imports.
+  private func extractTypeReferences(from text: String) -> [String] {
+    var refs = Set<String>()
+    let nsText = text as NSString
+    let fullRange = NSRange(location: 0, length: nsText.length)
+    
+    let builtins: Set<String> = [
+      "string", "number", "boolean", "void", "any", "unknown", "never", "null",
+      "undefined", "object", "symbol", "bigint",
+      "String", "Number", "Boolean", "Object", "Symbol", "BigInt",
+      "Array", "Map", "Set", "WeakMap", "WeakSet", "Promise", "Date",
+      "Error", "RegExp", "Function", "Record", "Partial", "Required",
+      "Readonly", "Pick", "Omit", "Exclude", "Extract", "NonNullable",
+      "ReturnType", "InstanceType", "Parameters", "ConstructorParameters",
+      "Awaited", "Uppercase", "Lowercase", "Capitalize", "Uncapitalize"
+    ]
+    
+    let patterns: [(String, Int)] = [
+      (#":\s+([A-Z]\w+)"#, 1),
+      (#"\bas\s+([A-Z]\w+)"#, 1),
+      (#"\bnew\s+([A-Z]\w+)"#, 1),
+      (#"\b(?:extends|implements)\s+([A-Z]\w+)"#, 1),
+      (#"<([A-Z]\w+)[,>]"#, 1),
+      (#"import\s+\{([^}]+)\}\s+from"#, 1),
+      (#"\btypeof\s+([A-Z]\w+)"#, 1),
+      (#"\b([A-Z]\w+)\.\w+"#, 1),
+      // Glimmer/JSX component invocations: <SomeComponent
+      (#"<([A-Z]\w+)[\s/>]"#, 1),
+    ]
+    
+    for (pattern, group) in patterns {
+      guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+      let matches = regex.matches(in: text, range: fullRange)
+      
+      for match in matches {
+        guard match.numberOfRanges > group else { continue }
+        let range = match.range(at: group)
+        guard range.location != NSNotFound else { continue }
+        let captured = nsText.substring(with: range)
+        
+        if pattern.contains("import") {
+          let names = captured.components(separatedBy: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .map { $0.components(separatedBy: " as ").first ?? $0 }
+            .filter { !$0.isEmpty && $0.first?.isUppercase == true }
+          for name in names {
+            let cleaned = name.trimmingCharacters(in: .whitespaces)
+            if !builtins.contains(cleaned) {
+              refs.insert(cleaned)
+            }
+          }
+        } else if !builtins.contains(captured) {
+          refs.insert(captured)
+        }
+      }
+    }
+    
+    return refs.sorted()
   }
   
   /// Escape source code for JavaScript string literal
@@ -283,17 +363,24 @@ public final class JSCoreTypeScriptChunker: @unchecked Sendable {
     return "\"\(escaped)\""
   }
   
-  /// Fallback to line-based chunking
+  /// Fallback to line-based chunking with basic import extraction
   private func fallbackChunk(source: String) -> [ASTChunk] {
     let lines = source.components(separatedBy: "\n")
     let maxLines = 100
     var chunks: [ASTChunk] = []
     var currentStart = 1
     
+    // Extract imports via regex so dependencies aren't lost on fallback
+    let fallbackMetadata = extractFallbackMetadata(from: source)
+    
     while currentStart <= lines.count {
       let currentEnd = min(currentStart + maxLines - 1, lines.count)
       let chunkLines = lines[(currentStart - 1)..<currentEnd]
       let text = chunkLines.joined(separator: "\n")
+      
+      // Attach import metadata to the first chunk, type refs to all chunks
+      var metadata = currentStart == 1 ? fallbackMetadata : ASTChunkMetadata()
+      metadata.typeReferences = extractTypeReferences(from: text)
       
       chunks.append(ASTChunk(
         constructType: .file,
@@ -301,12 +388,62 @@ public final class JSCoreTypeScriptChunker: @unchecked Sendable {
         startLine: currentStart,
         endLine: currentEnd,
         text: text,
-        language: Self.language
+        language: Self.language,
+        metadata: metadata
       ))
       
       currentStart = currentEnd + 1
     }
     
     return chunks
+  }
+  
+  /// Extract basic metadata from source using regex (used when AST parsing fails)
+  private func extractFallbackMetadata(from source: String) -> ASTChunkMetadata {
+    var imports: [String] = []
+    var frameworks: [String] = []
+    var hasTemplate = false
+    var usesEmberConcurrency = false
+    var tioUiImports: [String] = []
+    
+    // Match ES import statements: import ... from 'module-path'
+    let importRegex = try? NSRegularExpression(
+      pattern: #"import\s+(?:(?:\{[^}]*\}|[^;{]*)\s+from\s+)?['"]([^'"]+)['"]"#,
+      options: []
+    )
+    let nsSource = source as NSString
+    let matches = importRegex?.matches(in: source, range: NSRange(location: 0, length: nsSource.length)) ?? []
+    
+    for match in matches {
+      if match.numberOfRanges > 1 {
+        let importPath = nsSource.substring(with: match.range(at: 1))
+        imports.append(importPath)
+        
+        if importPath == "ember-concurrency" {
+          usesEmberConcurrency = true
+        }
+        if importPath.hasPrefix("@glimmer/") || importPath.hasPrefix("@ember/") {
+          if !frameworks.contains("Ember") { frameworks.append("Ember") }
+        }
+        if importPath.hasPrefix("tio-ui/") {
+          tioUiImports.append(importPath)
+        }
+      }
+    }
+    
+    // Detect <template> tag
+    if source.contains("<template>") || source.contains("<template ") {
+      hasTemplate = true
+      if !frameworks.contains("Ember") { frameworks.append("Ember") }
+    }
+    
+    return ASTChunkMetadata(
+      imports: imports,
+      usesEmberConcurrency: usesEmberConcurrency,
+      hasTemplate: hasTemplate,
+      tioUiImports: tioUiImports,
+      frameworks: frameworks,
+      typeReferences: extractTypeReferences(from: source)
+    )
   }
 }

@@ -721,6 +721,33 @@ private final class TypeReferenceCollector: SyntaxVisitor {
     return .visitChildren
   }
   
+  // MARK: - Attributes (Dependency Injection)
+  
+  /// Visit attributes to capture DI types: @Environment(SomeType.self), @EnvironmentObject, etc.
+  /// This ensures types injected via SwiftUI property wrappers count as references (#261).
+  override func visit(_ node: AttributeSyntax) -> SyntaxVisitorContinueKind {
+    let attrName = node.attributeName.trimmedDescription
+    
+    // @Environment(SomeType.self) — extract SomeType from the argument
+    if attrName == "Environment" {
+      if let arguments = node.arguments {
+        let argText = arguments.description.trimmingCharacters(in: .whitespaces)
+        // Match: (SomeType.self) — extract the type name before .self
+        let pattern = #"([A-Z]\w+)\.self"#
+        if let regex = try? NSRegularExpression(pattern: pattern),
+           let match = regex.firstMatch(in: argText, range: NSRange(argText.startIndex..., in: argText)),
+           let nameRange = Range(match.range(at: 1), in: argText) {
+          let name = String(argText[nameRange])
+          if isUserType(name) {
+            typeReferences.insert(name)
+          }
+        }
+      }
+    }
+    
+    return .visitChildren
+  }
+  
   // MARK: - Type Extraction Helpers
   
   private func extractTypeName(from type: TypeSyntax) {
