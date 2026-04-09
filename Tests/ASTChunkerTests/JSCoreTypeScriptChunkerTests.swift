@@ -69,6 +69,22 @@ final class JSCoreTypeScriptChunkerTests: XCTestCase {
     let interfaces = chunks.filter { $0.constructType == .protocolDecl }
     XCTAssertEqual(interfaces.count, 2, "Should have 2 interface chunks")
   }
+
+  func testTypeScriptChunkPopulatesNormalizedSymbols() {
+    let source = """
+    export class UserService {
+      private users: User[] = [];
+    }
+    """
+
+    let chunks = chunker.chunk(source: source, language: "ts")
+    let classChunk = try? XCTUnwrap(chunks.first { $0.constructType == .classDecl })
+
+    XCTAssertEqual(classChunk??.metadata.symbolDefinitions, [
+      ASTSymbol(name: "UserService", kind: .type, language: "typescript")
+    ])
+    XCTAssertTrue(classChunk??.metadata.symbolReferences.contains(ASTSymbol(name: "User", kind: .unknown, language: "typescript")) ?? false)
+  }
   
   func testTypeScriptFunction() {
     let source = """

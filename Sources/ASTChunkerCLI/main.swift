@@ -102,8 +102,8 @@ struct CLI {
     }
 
     let filename = (path as NSString).lastPathComponent
-    let chunker = SwiftChunker()
-    let chunks = chunker.chunk(source: source)
+    let service = ASTChunkerService()
+    let chunks = service.chunk(source: source, filename: filename)
 
     print("File: \(filename)")
     print("Total chunks: \(chunks.count)")

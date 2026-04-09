@@ -173,8 +173,8 @@ final class ASTChunkerTests: XCTestCase {
     // TypeScript files
     XCTAssertEqual(service.detectLanguage(for: "component.ts"), "typescript")
     XCTAssertEqual(service.detectLanguage(for: "component.tsx"), "typescript")
-    XCTAssertEqual(service.detectLanguage(for: "component.gts"), "typescript")
-    XCTAssertEqual(service.detectLanguage(for: "component.gjs"), "typescript")
+    XCTAssertEqual(service.detectLanguage(for: "component.gts"), "gts")
+    XCTAssertEqual(service.detectLanguage(for: "component.gjs"), "gjs")
     XCTAssertEqual(service.detectLanguage(for: "helper.js"), "typescript")
   }
   
@@ -210,5 +210,79 @@ final class ASTChunkerTests: XCTestCase {
     // Should produce fallback chunks
     XCTAssertGreaterThan(chunks.count, 1)
     XCTAssertEqual(chunks.first?.constructType, .file)
+  }
+
+  func testServiceUsesJSCoreForTypeScriptWhenAvailable() throws {
+    let jsCore = JSCoreTypeScriptChunker.shared
+    try XCTSkipUnless(jsCore.isAvailable, "JSCore TypeScript chunker not available: \(jsCore.initError ?? \"unknown\")")
+
+    let service = ASTChunkerService()
+    let source = """
+    export class UserService {
+      private users: User[] = [];
+    }
+    """
+
+    let chunks = service.chunk(source: source, filename: "UserService.ts", maxChunkLines: 100)
+    let classChunk = try XCTUnwrap(chunks.first { $0.constructType == .classDecl })
+
+    XCTAssertEqual(classChunk.constructName, "UserService")
+    XCTAssertTrue(classChunk.metadata.symbolReferences.contains(ASTSymbol(name: "User", kind: .unknown, language: "typescript")))
+  }
+
+  func testServiceSupportsGTSViaAvailableParser() throws {
+    let jsCore = JSCoreTypeScriptChunker.shared
+    let glimmer = GlimmerChunker()
+    try XCTSkipUnless(jsCore.isAvailable || glimmer.isAvailable, "No GTS-capable parser available")
+
+    let service = ASTChunkerService()
+    let source = """
+    import Component from '@glimmer/component';
+
+    export default class Greeting extends Component {
+      <template>
+        Hello
+      </template>
+    }
+    """
+
+    let chunks = service.chunk(source: source, filename: "Greeting.gts", maxChunkLines: 100)
+    let classChunk = try XCTUnwrap(chunks.first { $0.constructType == .classDecl })
+
+    XCTAssertEqual(classChunk.constructName, "Greeting")
+    XCTAssertTrue(classChunk.text.contains("<template>"))
+  }
+
+  // MARK: - Symbol Metadata Tests
+
+  func testChunkInitializerNormalizesDefinitionAndReferenceSymbols() {
+    let chunk = ASTChunk(
+      constructType: .classDecl,
+      constructName: "UserService",
+      startLine: 1,
+      endLine: 10,
+      text: "class UserService { let repository: UserRepository }",
+      language: "swift",
+      metadata: ASTChunkMetadata(typeReferences: ["UserRepository", "User"])
+    )
+
+    XCTAssertEqual(chunk.metadata.symbolDefinitions, [
+      ASTSymbol(name: "UserService", kind: .type, language: "swift")
+    ])
+    XCTAssertEqual(chunk.metadata.symbolReferences, [
+      ASTSymbol(name: "UserRepository", kind: .unknown, language: "swift"),
+      ASTSymbol(name: "User", kind: .unknown, language: "swift")
+    ])
+  }
+
+  func testChunkMetadataDecodesLegacyJSONWithoutSymbolFields() throws {
+    let json = #"{"decorators":["@MainActor"],"typeReferences":["Repository"]}"#
+
+    let metadata = try XCTUnwrap(ASTChunkMetadata.fromJSON(json))
+
+    XCTAssertEqual(metadata.decorators, ["@MainActor"])
+    XCTAssertEqual(metadata.typeReferences, ["Repository"])
+    XCTAssertTrue(metadata.symbolDefinitions.isEmpty)
+    XCTAssertTrue(metadata.symbolReferences.isEmpty)
   }
 }

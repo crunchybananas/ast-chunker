@@ -152,6 +152,22 @@ final class SwiftChunkerTests: XCTestCase {
     XCTAssertEqual(chunks.first?.constructType, .function)
     XCTAssertEqual(chunks.first?.constructName, "calculateTotal")
   }
+
+  func testSwiftChunkPopulatesNormalizedSymbols() {
+    let source = """
+    struct UserService {
+      let repository: UserRepository
+    }
+    """
+
+    let chunks = chunker.chunk(source: source, maxChunkLines: 100)
+    let chunk = try? XCTUnwrap(chunks.first)
+
+    XCTAssertEqual(chunk??.metadata.symbolDefinitions, [
+      ASTSymbol(name: "UserService", kind: .type, language: "swift")
+    ])
+    XCTAssertTrue(chunk??.metadata.symbolReferences.contains(ASTSymbol(name: "UserRepository", kind: .unknown, language: "swift")) ?? false)
+  }
   
   // MARK: - Large Declaration Splitting
   

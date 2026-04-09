@@ -100,35 +100,55 @@ public final class JSCoreTypeScriptChunker: @unchecked Sendable {
       }
     }
     
-    // Development: resolve relative to this source file's location
-    // #filePath gives the compile-time path of this .swift file,
-    // so we walk up to the repo root regardless of folder name.
-    let repoRoot = Self.findRepoRoot()
-    if let root = repoRoot {
+    // Development: resolve from known source locations
+    // Try multiple strategies to find the repo root
+    for root in Self.candidateRepoRoots() {
       let bundlePath = (root as NSString).appendingPathComponent("Tools/ast-chunker-js/dist/ast-chunker.bundle.js")
       if FileManager.default.fileExists(atPath: bundlePath) {
         return URL(fileURLWithPath: bundlePath)
       }
     }
-    
+
     return nil
   }
-  
-  /// Find the repo root from #filePath (compile-time source location)
-  /// This file lives at: <repo>/Local Packages/ASTChunker/Sources/ASTChunker/JSCoreTypeScriptChunker.swift
-  /// So we walk up 5 directory levels to get the repo root.
-  private static func findRepoRoot() -> String? {
+
+  /// Candidate repo roots — tries multiple strategies since #filePath
+  /// bakes in the compile-time path which breaks when the repo moves.
+  private static func candidateRepoRoots() -> [String] {
+    var candidates: [String] = []
+
+    // Strategy 1: Walk up from #filePath (works if repo hasn't moved since build)
     var url = URL(fileURLWithPath: #filePath)
-    // Walk up: ASTChunker/ -> Sources/ -> ASTChunker/ -> Local Packages/ -> <repo root>
     for _ in 0..<5 {
       url = url.deletingLastPathComponent()
     }
-    let root = url.path
-    // Verify it looks like the repo root (has Tools/ directory)
-    if FileManager.default.fileExists(atPath: (root as NSString).appendingPathComponent("Tools")) {
-      return root
+    let compileTimeRoot = url.path
+    if FileManager.default.fileExists(atPath: (compileTimeRoot as NSString).appendingPathComponent("Tools")) {
+      candidates.append(compileTimeRoot)
     }
-    return nil
+
+    // Strategy 2: Walk up from the app bundle (works even if repo moved)
+    // The app is at <repo>/build/Build/Products/Debug/Peel.app or DerivedData/...
+    var appURL = Bundle.main.bundleURL
+    for _ in 0..<6 {
+      appURL = appURL.deletingLastPathComponent()
+      let candidate = appURL.path
+      if FileManager.default.fileExists(atPath: (candidate as NSString).appendingPathComponent("Tools/ast-chunker-js")) {
+        candidates.append(candidate)
+        break
+      }
+    }
+
+    // Strategy 3: Common known paths
+    let home = FileManager.default.homeDirectoryForCurrentUser.path
+    for name in ["peel", "KitchenSink"] {
+      let path = (home as NSString).appendingPathComponent("code/\(name)")
+      if FileManager.default.fileExists(atPath: (path as NSString).appendingPathComponent("Tools/ast-chunker-js")) {
+        candidates.append(path)
+      }
+    }
+
+    return candidates
   }
   
   /// Chunk source code
@@ -221,7 +241,7 @@ public final class JSCoreTypeScriptChunker: @unchecked Sendable {
     let superclass: String?
     let usesEmberConcurrency: Bool?
     let hasTemplate: Bool?
-    let tioUiImports: [String]?
+    let designSystemImports: [String]?
     let frameworks: [String]?
   }
   
@@ -259,6 +279,10 @@ public final class JSCoreTypeScriptChunker: @unchecked Sendable {
       return .enumDecl
     case "imports":
       return .imports
+    case "component":
+      return .component
+    case "other":
+      return .file
     default:
       return .unknown
     }
@@ -277,7 +301,7 @@ public final class JSCoreTypeScriptChunker: @unchecked Sendable {
       superclass: js.superclass,
       usesEmberConcurrency: js.usesEmberConcurrency ?? false,
       hasTemplate: js.hasTemplate ?? false,
-      tioUiImports: js.tioUiImports ?? [],
+      designSystemImports: js.designSystemImports ?? [],
       frameworks: js.frameworks ?? [],
       typeReferences: extractTypeReferences(from: chunkText)
     )
@@ -404,7 +428,7 @@ public final class JSCoreTypeScriptChunker: @unchecked Sendable {
     var frameworks: [String] = []
     var hasTemplate = false
     var usesEmberConcurrency = false
-    var tioUiImports: [String] = []
+    var designSystemImports: [String] = []
     
     // Match ES import statements: import ... from 'module-path'
     let importRegex = try? NSRegularExpression(
@@ -425,8 +449,8 @@ public final class JSCoreTypeScriptChunker: @unchecked Sendable {
         if importPath.hasPrefix("@glimmer/") || importPath.hasPrefix("@ember/") {
           if !frameworks.contains("Ember") { frameworks.append("Ember") }
         }
-        if importPath.hasPrefix("tio-ui/") {
-          tioUiImports.append(importPath)
+        if importPath.hasPrefix("@org/ui-kit/") {
+          designSystemImports.append(importPath)
         }
       }
     }
@@ -441,7 +465,7 @@ public final class JSCoreTypeScriptChunker: @unchecked Sendable {
       imports: imports,
       usesEmberConcurrency: usesEmberConcurrency,
       hasTemplate: hasTemplate,
-      tioUiImports: tioUiImports,
+      designSystemImports: designSystemImports,
       frameworks: frameworks,
       typeReferences: extractTypeReferences(from: source)
     )

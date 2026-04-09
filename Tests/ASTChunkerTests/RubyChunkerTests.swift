@@ -154,6 +154,25 @@ final class RubyChunkerTests: XCTestCase {
     // Should be recognized as a class
     XCTAssertTrue(chunks.first?.constructType == .classDecl || chunks.first?.constructType == .file)
   }
+
+  func testRubySymbolNormalization() throws {
+    try skipIfTreeSitterUnavailable()
+
+    let source = """
+    class UserService
+      def initialize(repository)
+        @repository = repository
+      end
+    end
+    """
+
+    let chunks = chunker.chunk(source: source, maxChunkLines: 100)
+    let classChunk = try XCTUnwrap(chunks.first { $0.constructType == .classDecl })
+
+    XCTAssertEqual(classChunk.metadata.symbolDefinitions, [
+      ASTSymbol(name: "UserService", kind: .type, language: "ruby")
+    ])
+  }
   
   func testLargeFileSplitting() throws {
     try skipIfTreeSitterUnavailable()

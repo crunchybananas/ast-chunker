@@ -7,6 +7,31 @@
 
 import Foundation
 
+/// Language-agnostic symbol metadata extracted from a chunk.
+/// This is intentionally coarse for now: it normalizes construct definitions and
+/// reference names across Swift, Ruby, and TypeScript-family chunkers without
+/// requiring language-specific consumers to understand each parser.
+public struct ASTSymbol: Sendable, Equatable, Codable {
+  public enum Kind: String, Sendable, Codable, CaseIterable {
+    case type
+    case function
+    case property
+    case module
+    case component
+    case unknown
+  }
+
+  public let name: String
+  public let kind: Kind
+  public let language: String
+
+  public init(name: String, kind: Kind, language: String) {
+    self.name = name
+    self.kind = kind
+    self.language = language
+  }
+}
+
 /// Structured metadata extracted from AST analysis for improved RAG search
 public struct ASTChunkMetadata: Sendable, Equatable, Codable {
   // MARK: - Universal Metadata
@@ -47,8 +72,8 @@ public struct ASTChunkMetadata: Sendable, Equatable, Codable {
   /// Whether this file contains a Glimmer <template> block
   public var hasTemplate: Bool
   
-  /// TIO-UI component imports (for tio-front-end)
-  public var tioUiImports: [String]
+  /// Design-system component imports (e.g. @org/ui-kit)
+  public var designSystemImports: [String]
   
   /// Frameworks detected (SwiftUI, Rails, Ember, etc.)
   public var frameworks: [String]
@@ -58,6 +83,14 @@ public struct ASTChunkMetadata: Sendable, Equatable, Codable {
   /// Type names referenced in this chunk (variable types, instantiations, static accesses)
   /// Used to track same-module dependencies that don't require imports
   public var typeReferences: [String]
+
+  /// Normalized symbols defined by this chunk.
+  /// Example: a Swift class chunk defines `UserService`, a Ruby module chunk defines `Authentication`.
+  public var symbolDefinitions: [ASTSymbol]
+
+  /// Normalized symbols referenced by this chunk.
+  /// This currently derives from type-like references and will grow into a richer symbol graph.
+  public var symbolReferences: [ASTSymbol]
   
   public init(
     decorators: [String] = [],
@@ -70,9 +103,11 @@ public struct ASTChunkMetadata: Sendable, Equatable, Codable {
     associations: [String] = [],
     usesEmberConcurrency: Bool = false,
     hasTemplate: Bool = false,
-    tioUiImports: [String] = [],
+    designSystemImports: [String] = [],
     frameworks: [String] = [],
-    typeReferences: [String] = []
+    typeReferences: [String] = [],
+    symbolDefinitions: [ASTSymbol] = [],
+    symbolReferences: [ASTSymbol] = []
   ) {
     self.decorators = decorators
     self.protocols = protocols
@@ -84,9 +119,67 @@ public struct ASTChunkMetadata: Sendable, Equatable, Codable {
     self.associations = associations
     self.usesEmberConcurrency = usesEmberConcurrency
     self.hasTemplate = hasTemplate
-    self.tioUiImports = tioUiImports
+    self.designSystemImports = designSystemImports
     self.frameworks = frameworks
     self.typeReferences = typeReferences
+    self.symbolDefinitions = symbolDefinitions
+    self.symbolReferences = symbolReferences
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case decorators
+    case protocols
+    case imports
+    case superclass
+    case propertyWrappers
+    case mixins
+    case callbacks
+    case associations
+    case usesEmberConcurrency
+    case hasTemplate
+    case designSystemImports
+    case frameworks
+    case typeReferences
+    case symbolDefinitions
+    case symbolReferences
+  }
+
+  public init(from decoder: any Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    decorators = try container.decodeIfPresent([String].self, forKey: .decorators) ?? []
+    protocols = try container.decodeIfPresent([String].self, forKey: .protocols) ?? []
+    imports = try container.decodeIfPresent([String].self, forKey: .imports) ?? []
+    superclass = try container.decodeIfPresent(String.self, forKey: .superclass)
+    propertyWrappers = try container.decodeIfPresent([String].self, forKey: .propertyWrappers) ?? []
+    mixins = try container.decodeIfPresent([String].self, forKey: .mixins) ?? []
+    callbacks = try container.decodeIfPresent([String].self, forKey: .callbacks) ?? []
+    associations = try container.decodeIfPresent([String].self, forKey: .associations) ?? []
+    usesEmberConcurrency = try container.decodeIfPresent(Bool.self, forKey: .usesEmberConcurrency) ?? false
+    hasTemplate = try container.decodeIfPresent(Bool.self, forKey: .hasTemplate) ?? false
+    designSystemImports = try container.decodeIfPresent([String].self, forKey: .designSystemImports) ?? []
+    frameworks = try container.decodeIfPresent([String].self, forKey: .frameworks) ?? []
+    typeReferences = try container.decodeIfPresent([String].self, forKey: .typeReferences) ?? []
+    symbolDefinitions = try container.decodeIfPresent([ASTSymbol].self, forKey: .symbolDefinitions) ?? []
+    symbolReferences = try container.decodeIfPresent([ASTSymbol].self, forKey: .symbolReferences) ?? []
+  }
+
+  public func encode(to encoder: any Encoder) throws {
+    var container = encoder.container(keyedBy: CodingKeys.self)
+    try container.encode(decorators, forKey: .decorators)
+    try container.encode(protocols, forKey: .protocols)
+    try container.encode(imports, forKey: .imports)
+    try container.encodeIfPresent(superclass, forKey: .superclass)
+    try container.encode(propertyWrappers, forKey: .propertyWrappers)
+    try container.encode(mixins, forKey: .mixins)
+    try container.encode(callbacks, forKey: .callbacks)
+    try container.encode(associations, forKey: .associations)
+    try container.encode(usesEmberConcurrency, forKey: .usesEmberConcurrency)
+    try container.encode(hasTemplate, forKey: .hasTemplate)
+    try container.encode(designSystemImports, forKey: .designSystemImports)
+    try container.encode(frameworks, forKey: .frameworks)
+    try container.encode(typeReferences, forKey: .typeReferences)
+    try container.encode(symbolDefinitions, forKey: .symbolDefinitions)
+    try container.encode(symbolReferences, forKey: .symbolReferences)
   }
   
   /// Returns true if this metadata has any non-empty fields
@@ -101,9 +194,11 @@ public struct ASTChunkMetadata: Sendable, Equatable, Codable {
     !associations.isEmpty ||
     usesEmberConcurrency ||
     hasTemplate ||
-    !tioUiImports.isEmpty ||
+    !designSystemImports.isEmpty ||
     !frameworks.isEmpty ||
-    !typeReferences.isEmpty
+    !typeReferences.isEmpty ||
+    !symbolDefinitions.isEmpty ||
+    !symbolReferences.isEmpty
   }
   
   /// JSON representation for database storage
@@ -188,7 +283,70 @@ public struct ASTChunk: Sendable, Equatable {
     self.endLine = endLine
     self.text = text
     self.language = language
-    self.metadata = metadata
+    self.metadata = metadata.withNormalizedSymbols(
+      constructType: constructType,
+      constructName: constructName,
+      language: language
+    )
+  }
+}
+
+public extension ASTChunkMetadata {
+  func withNormalizedSymbols(
+    constructType: ASTChunk.ConstructType,
+    constructName: String?,
+    language: String
+  ) -> ASTChunkMetadata {
+    var copy = self
+
+    if copy.symbolDefinitions.isEmpty,
+       let definition = normalizedDefinitionSymbol(
+        constructType: constructType,
+        constructName: constructName,
+        language: language
+       ) {
+      copy.symbolDefinitions = [definition]
+    }
+
+    if copy.symbolReferences.isEmpty, !copy.typeReferences.isEmpty {
+      copy.symbolReferences = copy.typeReferences.map {
+        ASTSymbol(name: $0, kind: .unknown, language: language)
+      }
+    }
+
+    return copy
+  }
+
+  private func normalizedDefinitionSymbol(
+    constructType: ASTChunk.ConstructType,
+    constructName: String?,
+    language: String
+  ) -> ASTSymbol? {
+    guard let constructName, !constructName.isEmpty else {
+      return nil
+    }
+
+    let symbolKind: ASTSymbol.Kind
+    switch constructType {
+    case .classDecl, .structDecl, .enumDecl, .protocolDecl, .extension, .actorDecl:
+      symbolKind = .type
+    case .function, .method:
+      symbolKind = .function
+    case .property:
+      symbolKind = .property
+    case .module:
+      symbolKind = .module
+    case .component:
+      symbolKind = .component
+    case .file, .imports, .unknown:
+      symbolKind = .unknown
+    }
+
+    guard symbolKind != .unknown else {
+      return nil
+    }
+
+    return ASTSymbol(name: constructName, kind: symbolKind, language: language)
   }
 }
 
