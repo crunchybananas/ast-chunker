@@ -212,8 +212,11 @@ public struct SwiftTreeSitterChunker: LanguageChunker, Sendable {
     let declLine = lines[startLine].trimmingCharacters(in: .whitespaces)
 
     // Extract superclass and protocol conformances from declaration line
-    // e.g. class Foo: Bar, SomeProtocol or struct Foo: SomeProtocol
-    let inheritancePattern = #"(?:class|struct|enum|actor|extension)\s+\w+\s*(?:<[^>]*>)?\s*:\s*([A-Za-z][^{]*)"#
+    // e.g. class Foo: Bar, SomeProtocol or struct Foo: SomeProtocol or
+    // protocol Foo: SomeProtocol. `protocol` was missing here, so this
+    // fallback chunker emitted zero protocol-refinement rows for
+    // declarations like `protocol RAGToolsHandlerDelegate: MCPToolHandlerDelegate`.
+    let inheritancePattern = #"(?:class|struct|enum|actor|extension|protocol)\s+\w+\s*(?:<[^>]*>)?\s*:\s*([A-Za-z][^{]*)"#
     if let regex = try? NSRegularExpression(pattern: inheritancePattern),
        let match = regex.firstMatch(in: declLine, range: NSRange(declLine.startIndex..., in: declLine)),
        let inheritanceRange = Range(match.range(at: 1), in: declLine) {

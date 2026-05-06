@@ -196,24 +196,34 @@ public struct SwiftChunker: LanguageChunker, Sendable {
     var frameworks: [String] = []
     
     // Extract attributes (decorators)
+    //
+    // Note on inheritance: only ClassDeclSyntax can have a true superclass —
+    // for it, `extractInheritance` heuristically treats the first inherited
+    // type as the superclass and the rest as protocols. For everything else
+    // (struct/enum/actor/protocol/extension), every inherited type is a
+    // protocol conformance / refinement, so we pass `treatFirstAsSuperclass:
+    // false` and ignore the (always-nil) superclass return slot. Without
+    // that flag, the first conformance was silently dropped for non-class
+    // declarations — leaving symbol_refs with zero "conform" rows even on
+    // protocol-heavy codebases.
     if let withAttrs = decl.as(ClassDeclSyntax.self) {
       decorators = extractAttributes(from: withAttrs.attributes)
-      (superclass, protocols) = extractInheritance(from: withAttrs.inheritanceClause)
+      (superclass, protocols) = extractInheritance(from: withAttrs.inheritanceClause, treatFirstAsSuperclass: true)
     } else if let withAttrs = decl.as(StructDeclSyntax.self) {
       decorators = extractAttributes(from: withAttrs.attributes)
-      (_, protocols) = extractInheritance(from: withAttrs.inheritanceClause)
+      (_, protocols) = extractInheritance(from: withAttrs.inheritanceClause, treatFirstAsSuperclass: false)
     } else if let withAttrs = decl.as(EnumDeclSyntax.self) {
       decorators = extractAttributes(from: withAttrs.attributes)
-      (_, protocols) = extractInheritance(from: withAttrs.inheritanceClause)
+      (_, protocols) = extractInheritance(from: withAttrs.inheritanceClause, treatFirstAsSuperclass: false)
     } else if let withAttrs = decl.as(ActorDeclSyntax.self) {
       decorators = extractAttributes(from: withAttrs.attributes)
-      (_, protocols) = extractInheritance(from: withAttrs.inheritanceClause)
+      (_, protocols) = extractInheritance(from: withAttrs.inheritanceClause, treatFirstAsSuperclass: false)
     } else if let withAttrs = decl.as(ProtocolDeclSyntax.self) {
       decorators = extractAttributes(from: withAttrs.attributes)
-      (_, protocols) = extractInheritance(from: withAttrs.inheritanceClause)
+      (_, protocols) = extractInheritance(from: withAttrs.inheritanceClause, treatFirstAsSuperclass: false)
     } else if let withAttrs = decl.as(ExtensionDeclSyntax.self) {
       decorators = extractAttributes(from: withAttrs.attributes)
-      (_, protocols) = extractInheritance(from: withAttrs.inheritanceClause)
+      (_, protocols) = extractInheritance(from: withAttrs.inheritanceClause, treatFirstAsSuperclass: false)
     } else if let withAttrs = decl.as(FunctionDeclSyntax.self) {
       decorators = extractAttributes(from: withAttrs.attributes)
     }
@@ -258,25 +268,33 @@ public struct SwiftChunker: LanguageChunker, Sendable {
     return result
   }
   
-  /// Extract superclass and protocols from inheritance clause
-  private func extractInheritance(from clause: InheritanceClauseSyntax?) -> (superclass: String?, protocols: [String]) {
+  /// Extract superclass and protocols from inheritance clause.
+  ///
+  /// `treatFirstAsSuperclass` controls the heuristic that determines whether
+  /// the first inherited type is a superclass or a protocol conformance. Pass
+  /// `true` for `class` declarations (the only Swift kind that supports
+  /// single inheritance); pass `false` for struct/enum/actor/protocol/extension
+  /// where every inherited type is a protocol conformance or refinement and
+  /// the heuristic would silently drop the first one.
+  private func extractInheritance(
+    from clause: InheritanceClauseSyntax?,
+    treatFirstAsSuperclass: Bool
+  ) -> (superclass: String?, protocols: [String]) {
     guard let clause else { return (nil, []) }
-    
+
     var superclass: String? = nil
     var protocols: [String] = []
-    
+
     for (index, inherited) in clause.inheritedTypes.enumerated() {
       let typeName = inherited.type.trimmedDescription
-      
-      // First item could be superclass (for classes) - heuristic: starts with uppercase, not a known protocol
-      if index == 0 && !isKnownProtocol(typeName) {
-        // Could be superclass or protocol - we'll treat first as potential superclass for classes
+
+      if treatFirstAsSuperclass && index == 0 && !isKnownProtocol(typeName) {
         superclass = typeName
       } else {
         protocols.append(typeName)
       }
     }
-    
+
     return (superclass, protocols)
   }
   
