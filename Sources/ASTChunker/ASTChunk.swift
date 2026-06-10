@@ -234,6 +234,8 @@ public struct ASTChunk: Sendable, Equatable {
     case property       // Computed property (if large)
     case module         // Ruby/Python module
     case component      // UI Component (Ember/React)
+    case template       // Markup-only template content (Handlebars)
+    case block          // Template block helper ({{#each}}…{{/each}})
     case unknown
   }
   
@@ -336,7 +338,7 @@ public extension ASTChunkMetadata {
       symbolKind = .property
     case .module:
       symbolKind = .module
-    case .component:
+    case .component, .template, .block:
       symbolKind = .component
     case .file, .imports, .unknown:
       symbolKind = .unknown

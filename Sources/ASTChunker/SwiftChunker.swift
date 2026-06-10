@@ -215,6 +215,11 @@ public struct SwiftChunker: LanguageChunker, Sendable {
     } else if let withAttrs = decl.as(EnumDeclSyntax.self) {
       decorators = extractAttributes(from: withAttrs.attributes)
       (_, protocols) = extractInheritance(from: withAttrs.inheritanceClause, treatFirstAsSuperclass: false)
+      // Enum inheritance clauses mix the raw-value type with protocol
+      // conformances (`enum Foo: String, Codable`); the raw-value type is
+      // not a conformance and polluted refKind="conform" rows with String/
+      // Int across every raw-value enum in the repo (#745).
+      protocols.removeAll { Self.enumRawValueTypes.contains($0) }
     } else if let withAttrs = decl.as(ActorDeclSyntax.self) {
       decorators = extractAttributes(from: withAttrs.attributes)
       (_, protocols) = extractInheritance(from: withAttrs.inheritanceClause, treatFirstAsSuperclass: false)
@@ -250,6 +255,15 @@ public struct SwiftChunker: LanguageChunker, Sendable {
     )
   }
   
+  /// Types usable as enum raw values — excluded from `protocols` because an
+  /// enum's raw-value type appears in its inheritance clause without being a
+  /// conformance (#745).
+  private static let enumRawValueTypes: Set<String> = [
+    "String", "Int", "Int8", "Int16", "Int32", "Int64",
+    "UInt", "UInt8", "UInt16", "UInt32", "UInt64",
+    "Double", "Float", "Character",
+  ]
+
   /// Extract @attributes from a declaration
   private func extractAttributes(from attributes: AttributeListSyntax) -> [String] {
     var result: [String] = []

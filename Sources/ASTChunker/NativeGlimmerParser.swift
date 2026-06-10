@@ -51,7 +51,11 @@ public struct NativeGlimmerParser: Sendable {
           endLine: construct.endLine + 1,
           text: text,
           language: "Glimmer TypeScript",
-          metadata: ASTChunkMetadata(typeReferences: typeRefs)
+          metadata: ASTChunkMetadata(
+            protocols: construct.protocols,
+            superclass: construct.superclass,
+            typeReferences: typeRefs
+          )
         ))
       } else {
         // Split large construct
@@ -89,6 +93,11 @@ public struct NativeGlimmerParser: Sendable {
     let name: String?
     let startLine: Int  // 0-indexed
     let endLine: Int    // 0-indexed
+    // Inheritance facts (#745): RAGCore maps superclass → refKind "inherit"
+    // and protocols → refKind "conform"; before these were threaded through,
+    // every Ember class chunk produced zero conform/inherit symbol refs.
+    var superclass: String? = nil
+    var protocols: [String] = []
   }
 
   private func extractTopLevelConstructs(_ rootNode: TSNode, sourceLines: [String]) -> [ParsedConstruct] {
@@ -138,7 +147,14 @@ public struct NativeGlimmerParser: Sendable {
     switch nodeType {
     case "class_declaration":
       let name = extractName(node, sourceLines: sourceLines, patterns: [#"class\s+(\w+)"#])
-      return ParsedConstruct(type: .classDecl, name: name, startLine: startRow, endLine: endRow)
+      // The class header may wrap (`class Foo\n  extends Component`); scan
+      // the first few lines of the declaration for inheritance facts.
+      let header = extractLines(from: sourceLines, start: startRow, end: min(startRow + 3, endRow))
+      return ParsedConstruct(
+        type: .classDecl, name: name, startLine: startRow, endLine: endRow,
+        superclass: extractSuperclass(from: header),
+        protocols: extractImplements(from: header)
+      )
 
     case "function_declaration":
       let name = extractName(node, sourceLines: sourceLines, patterns: [#"function\s+(\w+)"#])
@@ -211,6 +227,51 @@ public struct NativeGlimmerParser: Sendable {
     return .file
   }
 
+  // MARK: - Inheritance Extraction (#745)
+
+  /// `class Foo extends Component<Sig>` → "Component". Dotted bases
+  /// (`extends Foo.Bar`) keep the full dotted name.
+  private func extractSuperclass(from header: String) -> String? {
+    guard let regex = try? NSRegularExpression(pattern: #"\bextends\s+([A-Za-z_$][\w$.]*)"#),
+          let match = regex.firstMatch(in: header, range: NSRange(header.startIndex..., in: header)),
+          let range = Range(match.range(at: 1), in: header) else { return nil }
+    return String(header[range])
+  }
+
+  /// `implements A, B<T>` → ["A", "B"]. Commas inside generic arguments
+  /// don't separate interfaces: `implements Foo<A, B>, Bar` → ["Foo", "Bar"].
+  private func extractImplements(from header: String) -> [String] {
+    guard let regex = try? NSRegularExpression(pattern: #"\bimplements\s+([^{\n]+)"#),
+          let match = regex.firstMatch(in: header, range: NSRange(header.startIndex..., in: header)),
+          let range = Range(match.range(at: 1), in: header) else { return [] }
+    return splitAtTopLevelCommas(String(header[range]))
+      .compactMap { item in
+        let base = item.trimmingCharacters(in: .whitespaces)
+          .components(separatedBy: "<").first?
+          .trimmingCharacters(in: .whitespaces) ?? ""
+        return base.isEmpty ? nil : base
+      }
+  }
+
+  /// Split on commas at angle-bracket depth 0 only.
+  private func splitAtTopLevelCommas(_ clause: String) -> [String] {
+    var parts: [String] = []
+    var current = ""
+    var depth = 0
+    for char in clause {
+      switch char {
+      case "<": depth += 1; current.append(char)
+      case ">": depth = max(0, depth - 1); current.append(char)
+      case "," where depth == 0:
+        parts.append(current)
+        current = ""
+      default: current.append(char)
+      }
+    }
+    parts.append(current)
+    return parts
+  }
+
   // MARK: - Name Extraction
 
   private func extractName(_ node: TSNode, sourceLines: [String], patterns: [String]) -> String? {
@@ -250,7 +311,14 @@ public struct NativeGlimmerParser: Sendable {
         endLine: chunkEnd + 1,
         text: text,
         language: "Glimmer TypeScript",
-        metadata: ASTChunkMetadata(typeReferences: extractTypeReferences(from: text))
+        metadata: ASTChunkMetadata(
+          // Inheritance facts only on the first part — symbol_refs dedupe
+          // per file, but keeping one source avoids implying every part
+          // re-declares the class.
+          protocols: i == 0 ? construct.protocols : [],
+          superclass: i == 0 ? construct.superclass : nil,
+          typeReferences: extractTypeReferences(from: text)
+        )
       ))
     }
 

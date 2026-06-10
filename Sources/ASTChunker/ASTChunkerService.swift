@@ -18,6 +18,7 @@ public struct ASTChunkerService: Sendable {
   private let rubyChunker: RubyChunker?
   private let glimmerChunker: GlimmerChunker?
   private let jsCoreTypeScriptChunker: JSCoreTypeScriptChunker?
+  private let handlebarsChunker = HandlebarsChunker()
 
   public init(
     treeSitterLibPath: String? = nil,
@@ -95,6 +96,8 @@ public struct ASTChunkerService: Sendable {
         return jsCoreTypeScriptChunker.chunk(source: source, language: language, maxChunkLines: maxChunkLines)
       }
       return fallbackChunk(source: source, language: language, maxChunkLines: maxChunkLines)
+    case "handlebars":
+      return handlebarsChunker.chunk(source: source, maxChunkLines: maxChunkLines)
     default:
       return fallbackChunk(source: source, language: language, maxChunkLines: maxChunkLines)
     }
@@ -122,6 +125,11 @@ public struct ASTChunkerService: Sendable {
     }
     if ext == "gjs" {
       return "gjs"
+    }
+
+    // Plain Handlebars templates (classic Ember layout)
+    if ext == "hbs" {
+      return "handlebars"
     }
 
     // TypeScript/JavaScript (regular, without Glimmer templates)

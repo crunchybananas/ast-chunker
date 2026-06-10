@@ -153,7 +153,7 @@ final class SwiftChunkerTests: XCTestCase {
     XCTAssertEqual(chunks.first?.constructName, "calculateTotal")
   }
 
-  func testSwiftChunkPopulatesNormalizedSymbols() {
+  func testSwiftChunkPopulatesNormalizedSymbols() throws {
     let source = """
     struct UserService {
       let repository: UserRepository
@@ -161,12 +161,12 @@ final class SwiftChunkerTests: XCTestCase {
     """
 
     let chunks = chunker.chunk(source: source, maxChunkLines: 100)
-    let chunk = try? XCTUnwrap(chunks.first)
+    let chunk = try XCTUnwrap(chunks.first)
 
-    XCTAssertEqual(chunk??.metadata.symbolDefinitions, [
+    XCTAssertEqual(chunk.metadata.symbolDefinitions, [
       ASTSymbol(name: "UserService", kind: .type, language: "swift")
     ])
-    XCTAssertTrue(chunk??.metadata.symbolReferences.contains(ASTSymbol(name: "UserRepository", kind: .unknown, language: "swift")) ?? false)
+    XCTAssertTrue(chunk.metadata.symbolReferences.contains(ASTSymbol(name: "UserRepository", kind: .unknown, language: "swift")))
   }
   
   // MARK: - Large Declaration Splitting
@@ -325,5 +325,22 @@ final class SwiftChunkerTests: XCTestCase {
     XCTAssertTrue(names.contains("A"))
     XCTAssertTrue(names.contains("B"))
     XCTAssertTrue(names.contains("C"))
+  }
+
+  func testEnumRawValueTypeIsNotAConformance() throws {
+    // #745: `enum Verdict: String, Codable` — String is the raw-value type,
+    // not a conformance; it used to land in protocols and pollute
+    // refKind="conform" across every raw-value enum in a repo.
+    let source = """
+    enum Verdict: String, Codable, CaseIterable {
+      case approve
+      case reject
+    }
+    """
+
+    let chunks = chunker.chunk(source: source, maxChunkLines: 100)
+    let enumChunk = try XCTUnwrap(chunks.first { $0.constructType == .enumDecl })
+
+    XCTAssertEqual(enumChunk.metadata.protocols, ["Codable", "CaseIterable"])
   }
 }

@@ -106,10 +106,11 @@ final class ASTChunkerTests: XCTestCase {
     """
     
     let chunker = RubyChunker()
+    try XCTSkipUnless(chunker.isAvailable, "tree-sitter Ruby grammar not available on this machine")
     let chunks = chunker.chunk(source: source, maxChunkLines: 100)
-    
+
     XCTAssertGreaterThanOrEqual(chunks.count, 1)
-    
+
     let classChunk = chunks.first { $0.constructType == .classDecl }
     XCTAssertNotNil(classChunk)
     XCTAssertEqual(classChunk?.constructName, "UserService")
@@ -131,10 +132,11 @@ final class ASTChunkerTests: XCTestCase {
     """
     
     let chunker = RubyChunker()
+    try XCTSkipUnless(chunker.isAvailable, "tree-sitter Ruby grammar not available on this machine")
     let chunks = chunker.chunk(source: source, maxChunkLines: 100)
-    
+
     XCTAssertGreaterThanOrEqual(chunks.count, 1)
-    
+
     let moduleChunk = chunks.first { $0.constructType == .module }
     XCTAssertNotNil(moduleChunk)
     XCTAssertEqual(moduleChunk?.constructName, "Authentication")
@@ -214,7 +216,7 @@ final class ASTChunkerTests: XCTestCase {
 
   func testServiceUsesJSCoreForTypeScriptWhenAvailable() throws {
     let jsCore = JSCoreTypeScriptChunker.shared
-    try XCTSkipUnless(jsCore.isAvailable, "JSCore TypeScript chunker not available: \(jsCore.initError ?? \"unknown\")")
+    try XCTSkipUnless(jsCore.isAvailable, "JSCore TypeScript chunker not available: \(jsCore.initError ?? "unknown")")
 
     let service = ASTChunkerService()
     let source = """
@@ -251,6 +253,61 @@ final class ASTChunkerTests: XCTestCase {
 
     XCTAssertEqual(classChunk.constructName, "Greeting")
     XCTAssertTrue(classChunk.text.contains("<template>"))
+  }
+
+  func testGlimmerClassEmitsInheritanceMetadata() throws {
+    // #745: superclass → refKind "inherit", protocols → refKind "conform".
+    // The native Glimmer parser used to emit only typeReferences, so every
+    // Ember component produced zero conform/inherit symbol refs.
+    let parser = NativeGlimmerParser()
+    let source = """
+    import Component from '@glimmer/component';
+
+    export default class UserCard extends Component<UserCardSignature> implements Tooltipped, Trackable {
+      <template>
+        {{this.user.name}}
+      </template>
+    }
+    """
+
+    let chunks = parser.parse(source: source, maxChunkLines: 100)
+    let classChunk = try XCTUnwrap(chunks.first { $0.constructType == .classDecl })
+
+    XCTAssertEqual(classChunk.metadata.superclass, "Component")
+    XCTAssertEqual(classChunk.metadata.protocols, ["Tooltipped", "Trackable"])
+  }
+
+  func testGlimmerWrappedClassHeaderStillYieldsSuperclass() throws {
+    let parser = NativeGlimmerParser()
+    let source = """
+    import Component from '@glimmer/component';
+
+    export default class VeryLongComponentName
+      extends Component {
+      <template>hi</template>
+    }
+    """
+
+    let chunks = parser.parse(source: source, maxChunkLines: 100)
+    let classChunk = try XCTUnwrap(chunks.first { $0.constructType == .classDecl })
+    XCTAssertEqual(classChunk.metadata.superclass, "Component")
+  }
+
+  func testGlimmerImplementsWithGenericArgumentsSplitsAtTopLevel() throws {
+    // Commas inside generic arguments must not split the implements clause:
+    // `implements Mapper<Key, Value>, Trackable` is two interfaces, not three.
+    let parser = NativeGlimmerParser()
+    let source = """
+    import Component from '@glimmer/component';
+
+    export default class DataGrid extends Component implements Mapper<Key, Value>, Trackable {
+      <template>hi</template>
+    }
+    """
+
+    let chunks = parser.parse(source: source, maxChunkLines: 100)
+    let classChunk = try XCTUnwrap(chunks.first { $0.constructType == .classDecl })
+    XCTAssertEqual(classChunk.metadata.protocols, ["Mapper", "Trackable"])
   }
 
   // MARK: - Symbol Metadata Tests
