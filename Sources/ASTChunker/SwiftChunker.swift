@@ -701,7 +701,13 @@ private final class TypeReferenceCollector: SyntaxVisitor {
   /// Visit generic arguments (e.g., `Array<SomeType>`)
   override func visit(_ node: GenericArgumentClauseSyntax) -> SyntaxVisitorContinueKind {
     for argument in node.arguments {
-      extractTypeName(from: argument.argument)
+      // swift-syntax 601+ made GenericArgumentSyntax.argument an `Argument`
+      // enum (SE-0452 value generics). `.as(TypeSyntax.self)` extracts the
+      // `.type` case and is a no-op cast on the pre-601 `TypeSyntax` API, so
+      // this compiles across the whole 600..<604 range.
+      if let type = argument.argument.as(TypeSyntax.self) {
+        extractTypeName(from: type)
+      }
     }
     return .visitChildren
   }
